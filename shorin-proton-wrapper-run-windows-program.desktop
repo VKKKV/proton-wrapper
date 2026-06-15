@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Proton Run Windows Program
-Name[zh_CN]=用Proton运行Windows程序
+Name=Run Windows Software
+Name[zh_CN]=运行Windows软件
 Comment=Run Windows executables with Proton
 Exec=shorin-proton-wrapper %f
 Icon=shorin-proton

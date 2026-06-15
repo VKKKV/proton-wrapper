@@ -52,8 +52,8 @@ Options:
   --version VERSION       use specific release tag, default latest
   --update                update all installed Latest runners
   --remove ge|dw          remove runner from ~/.local/share/proton/runners
-  --remove-steam ge|dw    remove runner from Steam
-  --remove-lutris ge|dw   remove runner from Lutris
+  --remove-steam [ge|dw]  remove runner from Steam, or all wrapper-installed runners
+  --remove-lutris [ge|dw] remove runner from Lutris, or all wrapper-installed runners
   --help-full             show detailed help
 
 Examples:
@@ -88,8 +88,8 @@ usage_zh() {
   --version 版本          指定特定版本，默认 latest
   --update                升级所有已安装的 Latest 运行器
   --remove ge|dw          移除默认位置中已安装的运行器
-  --remove-steam ge|dw    移除 Steam 中已安装的运行器
-  --remove-lutris ge|dw   移除 Lutris 中已安装的运行器
+  --remove-steam [ge|dw]  移除 Steam 中指定或全部由 wrapper 安装的运行器
+  --remove-lutris [ge|dw] 移除 Lutris 中指定或全部由 wrapper 安装的运行器
   --help-full             显示完整说明
 
 示例:
@@ -140,8 +140,8 @@ Update runners:
 
 Remove runner:
   shorin-proton-wrapper --remove ge|dw
-  shorin-proton-wrapper --remove-steam ge|dw
-  shorin-proton-wrapper --remove-lutris ge|dw
+  shorin-proton-wrapper --remove-steam [ge|dw]
+  shorin-proton-wrapper --remove-lutris [ge|dw]
 
 Install targets:
   local   ~/.local/share/proton/runners
@@ -190,8 +190,8 @@ usage_full_zh() {
 
 移除运行器:
   shorin-proton-wrapper --remove ge|dw
-  shorin-proton-wrapper --remove-steam ge|dw
-  shorin-proton-wrapper --remove-lutris ge|dw
+  shorin-proton-wrapper --remove-steam [ge|dw]
+  shorin-proton-wrapper --remove-lutris [ge|dw]
 
 安装目标:
   local   ~/.local/share/proton/runners
@@ -582,6 +582,15 @@ runner_dir_name() {
   esac
 }
 
+runner_target_dir_name() {
+  local product="$1" version="$2" tag="${3:-}"
+  if [[ "$version" == "latest" ]]; then
+    runner_dir_name "$product"
+  else
+    printf '%s\n' "${tag:-$version}"
+  fi
+}
+
 runner_product_alias() {
   local product="${1,,}"
   case "$product" in
@@ -768,6 +777,31 @@ find_extracted_runner_root() {
   return 1
 }
 
+installed_runner_version() {
+  local target="$1" product="$2" line version
+
+  if [[ -r "$target/.shorin-proton-wrapper-version" ]]; then
+    sed -n '1p' "$target/.shorin-proton-wrapper-version"
+    return 0
+  fi
+
+  if [[ -r "$target/version" ]]; then
+    line="$(sed -n '1p' "$target/version")"
+    case "$product" in
+      ge)
+        version="$(printf '%s\n' "$line" | grep -o 'GE-Proton[^[:space:]]*' | head -n 1 || true)"
+        ;;
+      dw)
+        version="$(printf '%s\n' "$line" | grep -o 'dwproton-[^[:space:]]*' | head -n 1 || true)"
+        ;;
+      *)
+        version=""
+        ;;
+    esac
+    [[ -n "$version" ]] && printf '%s\n' "$version"
+  fi
+}
+
 download_runner() {
   local product info tag archive_name archive_url checksum_name checksum_url dir release_output
   product="$(normalize_product "$PRODUCT")"
@@ -799,7 +833,7 @@ install_runner() {
   [[ -n "$tag" ]] || die "release not found for $product $VERSION"
   download_dir="$(expand_path "${DOWNLOAD_DIR:-$(xdg_download_dir)}")"
   install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
-  dir_name="$(runner_dir_name "$product")"
+  dir_name="$(runner_target_dir_name "$product" "$VERSION" "$tag")"
   target="$install_dir/$dir_name"
 
   mkdir -p "$download_dir" "$install_dir"
@@ -827,6 +861,7 @@ install_runner() {
   fi
   rm -rf "$target"
   mv "$root" "$target"
+  printf '%s\n' "$tag" > "$target/.shorin-proton-wrapper-version"
   rm -rf "$extract_dir"
 
   if [[ $use_existing -eq 0 ]]; then
@@ -839,30 +874,55 @@ install_runner() {
 }
 
 update_runner() {
-  local product target install_to_old updated
+  local product target install_to_old old_product old_version release_output info tag current found updated skipped
   install_to_old="$INSTALL_TO"
+  old_product="$PRODUCT"
+  old_version="$VERSION"
+  VERSION="latest"
+  info=()
+  found=0
   updated=0
+  skipped=0
 
   for INSTALL_TO in local steam lutris; do
     for product in ge dw; do
       PRODUCT="$product"
       target="$(expand_path "$(default_install_dir)")/$(runner_dir_name "$product")"
       if [[ -e "$target" ]]; then
-        printf 'Updating: %s\n' "$target"
-        install_runner
-        updated=1
+        found=1
+        release_output="$(release_info "$product" latest 2>&1)" || die "$release_output"
+        mapfile -t info <<< "$release_output"
+        tag="${info[0]:-}"
+        [[ -n "$tag" ]] || die "release not found for $product latest"
+        current="$(installed_runner_version "$target" "$product" || true)"
+        if [[ "$current" == "$tag" ]]; then
+          printf 'Already latest: %s (%s)\n' "$target" "$tag"
+          skipped=1
+        else
+          printf 'Updating: %s\n' "$target"
+          if [[ -n "$current" ]]; then
+            printf '  %s -> %s\n' "$current" "$tag"
+          fi
+          install_runner
+          updated=1
+        fi
       fi
     done
   done
 
   INSTALL_TO="$install_to_old"
-  [[ $updated -eq 1 ]] || die "no installed Latest runners found"
+  PRODUCT="$old_product"
+  VERSION="$old_version"
+  [[ $found -eq 1 ]] || die "no installed Latest runners found"
+  if [[ $updated -eq 0 && $skipped -eq 1 ]]; then
+    printf 'All installed Latest runners are up to date.\n'
+  fi
 }
 
 remove_runner() {
   local product dir_name install_dir target lang
   product="$(normalize_product "$PRODUCT")"
-  dir_name="$(runner_dir_name "$product")"
+  dir_name="$(runner_target_dir_name "$product" "$VERSION")"
   install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
   target="$install_dir/$dir_name"
   lang="$(ui_lang)"
@@ -882,6 +942,71 @@ remove_runner() {
   else
     printf 'Removed: %s\n' "$target"
   fi
+}
+
+remove_all_runners() {
+  local install_dir path removed lang
+  install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
+  lang="$(ui_lang)"
+  removed=0
+
+  shopt -s nullglob
+  for path in "$install_dir"/*; do
+    if [[ -d "$path" && -f "$path/.shorin-proton-wrapper-version" ]]; then
+      rm -rf "$path"
+      removed=1
+      if [[ "$lang" == "zh" ]]; then
+        printf '已移除: %s\n' "$path"
+      else
+        printf 'Removed: %s\n' "$path"
+      fi
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ $removed -eq 0 ]]; then
+    if [[ "$lang" == "zh" ]]; then
+      die "没有找到由 shorin-proton-wrapper 安装的运行器: $install_dir"
+    else
+      die "no runners installed by shorin-proton-wrapper found in: $install_dir"
+    fi
+  fi
+}
+
+ensure_runner_product() {
+  local product="$1" old_product old_version old_install_to
+  if try_resolve_runner_product "$product"; then
+    return 0
+  fi
+
+  old_product="$PRODUCT"
+  old_version="$VERSION"
+  old_install_to="$INSTALL_TO"
+
+  PRODUCT="$product"
+  VERSION="latest"
+  INSTALL_TO="local"
+  install_runner
+
+  PRODUCT="$old_product"
+  VERSION="$old_version"
+  INSTALL_TO="$old_install_to"
+
+  try_resolve_runner_product "$product"
+}
+
+select_init_runner() {
+  local product
+  if [[ -n "$RUNNER_ARG" ]]; then
+    if product="$(runner_product_alias "$RUNNER_ARG")"; then
+      ensure_runner_product "$product" || die "failed to install runner: $product"
+    else
+      resolve_runner_arg "$RUNNER_ARG"
+    fi
+    return 0
+  fi
+
+  ensure_runner_product dw || die "failed to install runner: dw"
 }
 
 run_proton_command() {
@@ -923,7 +1048,7 @@ exec_wine_command() {
 }
 
 init_prefix() {
-  select_runner
+  select_init_runner
   if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
     run_proton_command "$RESOLVED_RUNNER_PATH" run wineboot -u
   else
@@ -1114,18 +1239,26 @@ parse_args() {
         shift 2
         ;;
       --remove-steam)
-        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
-        ACTION="remove"
-        PRODUCT="$2"
         INSTALL_TO="steam"
-        shift 2
+        if [[ $# -ge 2 && ! "$2" =~ ^- ]]; then
+          ACTION="remove"
+          PRODUCT="$2"
+          shift 2
+        else
+          ACTION="remove-all"
+          shift
+        fi
         ;;
       --remove-lutris)
-        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
-        ACTION="remove"
-        PRODUCT="$2"
         INSTALL_TO="lutris"
-        shift 2
+        if [[ $# -ge 2 && ! "$2" =~ ^- ]]; then
+          ACTION="remove"
+          PRODUCT="$2"
+          shift 2
+        else
+          ACTION="remove-all"
+          shift
+        fi
         ;;
       --)
         shift
@@ -1181,6 +1314,9 @@ case "$ACTION" in
     ;;
   remove)
     remove_runner
+    ;;
+  remove-all)
+    remove_all_runners
     ;;
   "")
     [[ -n "$TARGET" ]] || die "no target provided"

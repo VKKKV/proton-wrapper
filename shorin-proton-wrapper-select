@@ -5,20 +5,61 @@ exe="${1:-}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 wrapper="shorin-proton-wrapper"
 
+ui_lang() {
+  local locale="${PROTON_LANG:-${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}}"
+  case "${locale,,}" in
+    zh|zh_*|zh.*|zh-*) printf 'zh\n' ;;
+    *) printf 'en\n' ;;
+  esac
+}
+
+lang="$(ui_lang)"
+if [[ "$lang" == "zh" ]]; then
+  title="Shorin Proton Wrapper"
+  err_wrapper_required="shorin-proton-wrapper-select: 需要 shorin-proton-wrapper"
+  err_no_exe="shorin-proton-wrapper-select: 未提供可执行文件"
+  err_zenity_required="shorin-proton-wrapper-select: 需要 zenity"
+  cached_text="已找到此程序的缓存环境："
+  action_column="操作"
+  action_run="直接运行"
+  action_reselect="重新选择"
+  action_cancel="取消"
+  no_runner_text="没有找到 Proton 或 Wine 运行器。"
+  runner_name_column="名称"
+  runner_type_column="类型"
+  runner_source_column="来源"
+  runner_path_column="路径"
+else
+  title="Shorin Proton Wrapper"
+  err_wrapper_required="shorin-proton-wrapper-select: shorin-proton-wrapper is required"
+  err_no_exe="shorin-proton-wrapper-select: no executable provided"
+  err_zenity_required="shorin-proton-wrapper-select: zenity is required"
+  cached_text="Cached environment found for:"
+  action_column="Action"
+  action_run="Run"
+  action_reselect="Reselect"
+  action_cancel="Cancel"
+  no_runner_text="No Proton or Wine runner found."
+  runner_name_column="Name"
+  runner_type_column="Type"
+  runner_source_column="Source"
+  runner_path_column="Path"
+fi
+
 if [[ -x "$script_dir/shorin-proton-wrapper" ]]; then
   wrapper="$script_dir/shorin-proton-wrapper"
 elif ! command -v shorin-proton-wrapper >/dev/null 2>&1; then
-  printf 'shorin-proton-wrapper-select: shorin-proton-wrapper is required\n' >&2
+  printf '%s\n' "$err_wrapper_required" >&2
   exit 1
 fi
 
 if [[ -z "$exe" ]]; then
-  printf 'shorin-proton-wrapper-select: no executable provided\n' >&2
+  printf '%s\n' "$err_no_exe" >&2
   exit 1
 fi
 
 if ! command -v zenity >/dev/null 2>&1; then
-  printf 'shorin-proton-wrapper-select: zenity is required\n' >&2
+  printf '%s\n' "$err_zenity_required" >&2
   exit 1
 fi
 
@@ -42,28 +83,29 @@ read_cache() {
 }
 
 if read_cache; then
+  cache_message="$(printf '%s\n%s' "$cached_text" "$exe")"
   action="$(zenity \
     --list \
-    --title='Shorin Proton Wrapper' \
-    --text="Cached environment found for:\n$exe" \
+    --title="$title" \
+    --text="$cache_message" \
     --width=760 \
     --height=260 \
-    --column='Action' \
+    --column="$action_column" \
     --hide-header \
-    'Run' \
-    'Reselect' \
-    'Cancel')" || exit 1
+    "$action_run" \
+    "$action_reselect" \
+    "$action_cancel")" || exit 1
   case "$action" in
-    Run)
+    "$action_run")
       exec "$wrapper" -p "$cache_prefix" --runner "$cache_runner" "$exe"
       ;;
-    Cancel|"")
+    "$action_cancel"|"")
       exit 0
       ;;
   esac
 fi
 
-prefix="$(zenity --file-selection --directory --title='Shorin Proton Wrapper')" || exit 1
+prefix="$(zenity --file-selection --directory --title="$title")" || exit 1
 
 rows=()
 name=""
@@ -84,19 +126,19 @@ while IFS= read -r line; do
 done < <("$wrapper" --list-runner)
 
 if [[ ${#rows[@]} -eq 0 ]]; then
-  zenity --error --title='Shorin Proton Wrapper' --text='No Proton or Wine runner found.'
+  zenity --error --title="$title" --text="$no_runner_text"
   exit 1
 fi
 
 runner="$(zenity \
   --list \
-  --title='Shorin Proton Wrapper' \
+  --title="$title" \
   --width=900 \
   --height=420 \
-  --column='Name' \
-  --column='Type' \
-  --column='Source' \
-  --column='Path' \
+  --column="$runner_name_column" \
+  --column="$runner_type_column" \
+  --column="$runner_source_column" \
+  --column="$runner_path_column" \
   --print-column=4 \
   "${rows[@]}")" || exit 1
 

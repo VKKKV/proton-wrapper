@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Proton Run Windows Program (select)
-Name[zh_CN]=选择运行Windows程序的环境
+Name=Run Windows Software (Custom Environment)
+Name[zh_CN]=自定义环境运行Windows软件
 Comment=Run Windows executables with selected Proton runner and prefix
 Exec=shorin-proton-wrapper-select %f
 Icon=shorin-proton
