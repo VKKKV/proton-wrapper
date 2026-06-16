@@ -2,6 +2,7 @@
 import hashlib
 import locale
 import os
+import shutil
 import subprocess
 import sys
 import warnings
@@ -36,15 +37,15 @@ TEXT = {
     "prefix": "前置环境" if ZH else "Prefix",
     "runner": "运行器" if ZH else "Runner",
     "program_desc": "将要运行的 Windows 程序" if ZH else "Windows program to run",
-    "prefix_desc": "选择或输入此程序使用的 Proton 前置环境目录" if ZH else "Choose or enter the Proton prefix directory for this program",
+    "prefix_desc": "运行器会在此目录创建虚拟 C 盘，程序会在此环境中运行" if ZH else "The runner creates a virtual C drive here and runs the program in this environment",
     "runner_desc": "选择用于启动此程序的 Proton 或 Wine 运行器" if ZH else "Choose the Proton or Wine runner used to launch this program",
-    "run": "直接运行" if ZH else "Run",
+    "run": "开始运行" if ZH else "Start",
     "reselect": "重新设置" if ZH else "Reconfigure",
     "cancel": "取消" if ZH else "Cancel",
-    "choose_env": "选择运行环境" if ZH else "Choose runtime environment",
+    "choose_env": "设置运行环境" if ZH else "Configure runtime environment",
     "browse": "浏览" if ZH else "Browse",
     "display": "显示适配" if ZH else "Display compatibility",
-    "display_desc": "遇到全屏、分辨率或帧率问题时使用。" if ZH else "Use this for fullscreen, resolution, or frame-rate issues.",
+    "display_desc": "" if ZH else "",
     "use_gamescope": "使用 Gamescope" if ZH else "Use Gamescope",
     "fullscreen": "全屏运行" if ZH else "Fullscreen",
     "resolution": "游戏分辨率" if ZH else "Game resolution",
@@ -55,7 +56,8 @@ TEXT = {
     "custom_resolution": "自定义分辨率，例如 1366x768" if ZH else "Custom resolution, e.g. 1366x768",
     "custom_fps": "自定义帧率" if ZH else "Custom FPS",
     "fsr": "FSR 超分辨率" if ZH else "FSR upscaling",
-    "fsr_desc": "低分辨率渲染后放大到屏幕，提升性能但可能降低清晰度。" if ZH else "Render at a lower resolution and upscale to the screen; improves performance but may reduce clarity.",
+    "mangohud": "MangoHud 性能叠加层" if ZH else "MangoHud performance overlay",
+    "mangohud_missing": "未安装 MangoHud" if ZH else "MangoHud is not installed",
     "extra_args": "额外参数" if ZH else "Extra arguments",
     "extra_args_desc": "高级选项：直接追加到 gamescope 命令。" if ZH else "Advanced: appended directly to the gamescope command.",
     "invalid_resolution": "分辨率格式应为 宽x高，例如 1920x1080。" if ZH else "Resolution must be WIDTHxHEIGHT, e.g. 1920x1080.",
@@ -63,7 +65,7 @@ TEXT = {
     "no_runner": "没有找到 Proton 或 Wine 运行器。" if ZH else "No Proton or Wine runner found.",
     "select_prefix": "请选择前置环境目录。" if ZH else "Select a prefix directory.",
     "select_runner": "请选择运行器。" if ZH else "Select a runner.",
-    "no_exe_error": "shorin-proton-wrapper-select: 未提供可执行文件" if ZH else "shorin-proton-wrapper-select: no executable provided",
+    "no_exe_error": "shorin-proton-wrapper-configure: 未提供可执行文件" if ZH else "shorin-proton-wrapper-configure: no executable provided",
 }
 
 COMMON_RESOLUTIONS = ["1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160"]
@@ -141,25 +143,58 @@ def section(title: str, description: str | None = None):
     return box
 
 
+def card(title: str, description: str | None = None):
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.add_css_class("settings-card")
+    box.set_margin_top(2)
+    box.set_margin_bottom(2)
+    box.set_margin_start(0)
+    box.set_margin_end(0)
+    header = section(title, description)
+    box.append(header)
+    return box
+
+
+def runner_label(runner: dict) -> str:
+    detail = runner.get("source") or runner.get("type")
+    return f'{runner["name"]} · {detail}' if detail else runner["name"]
+
+
+def prefer_dark_theme() -> bool:
+    try:
+        result = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+    except OSError:
+        return False
+    return "prefer-dark" in result.stdout
+
+
+def sync_color_scheme():
+    settings = Gtk.Settings.get_default()
+    if settings:
+        settings.set_property("gtk-application-prefer-dark-theme", prefer_dark_theme())
+
+
+def user_gtk_colors() -> bytes:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    colors = config_home / "gtk-4.0" / "colors.css"
+    if colors.is_file():
+        return colors.read_bytes() + b"\n"
+    return b""
+
+
 def install_css():
     provider = Gtk.CssProvider()
-    provider.load_from_data(b"""
-list.runner-list row:selected {
-  background-color: alpha(@accent_bg_color, 0.22);
-  background-image: none;
-  color: inherit;
-}
-
-list.runner-list row:selected label {
-  color: inherit;
-}
-
-list.runner-list row:selected .dim-label {
-  opacity: 0.86;
-}
-
-list.runner-list row:focus {
-  outline-color: @accent_color;
+    provider.load_from_data(user_gtk_colors() + b"""
+.settings-card {
+  background-color: alpha(@theme_fg_color, 0.055);
+  border: 1px solid alpha(@theme_fg_color, 0.08);
+  border-radius: 14px;
+  padding: 14px;
 }
 
 entry:focus {
@@ -170,6 +205,7 @@ entry:focus {
 
 checkbutton check:checked {
   background-color: @accent_bg_color;
+  background-image: none;
   border-color: @accent_bg_color;
   color: @accent_fg_color;
 }
@@ -197,6 +233,14 @@ def resolve_wrapper() -> str:
     return "shorin-proton-wrapper"
 
 
+def default_prefix() -> str:
+    return str(Path(os.environ.get("PROTON_PREFIX", Path.home() / ".proton")).expanduser())
+
+
+def has_mangohud() -> bool:
+    return shutil.which("mangohud") is not None
+
+
 def cache_file_for(exe: Path) -> Path:
     cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     cache_dir = cache_home / "shorin-proton-wrapper" / "associations"
@@ -220,11 +264,12 @@ def read_cache(path: Path):
             "prefix": prefix,
             "runner": runner,
             "gamescope": data.get("gamescope", "0"),
-            "gamescope_fullscreen": data.get("gamescope_fullscreen", "1"),
+            "gamescope_fullscreen": data.get("gamescope_fullscreen", "0"),
             "gamescope_res": data.get("gamescope_res", ""),
             "gamescope_fps": data.get("gamescope_fps", ""),
             "gamescope_fsr": data.get("gamescope_fsr", "0"),
             "gamescope_args": data.get("gamescope_args", ""),
+            "mangohud": "1" if data.get("mangohud", "0") == "1" and has_mangohud() else "0",
         }
     return None
 
@@ -235,11 +280,12 @@ def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
         f"prefix={prefix}\n"
         f"runner={runner}\n"
         f"gamescope={options.get('gamescope', '0')}\n"
-        f"gamescope_fullscreen={options.get('gamescope_fullscreen', '1')}\n"
+        f"gamescope_fullscreen={options.get('gamescope_fullscreen', '0')}\n"
         f"gamescope_res={options.get('gamescope_res', '')}\n"
         f"gamescope_fps={options.get('gamescope_fps', '')}\n"
         f"gamescope_fsr={options.get('gamescope_fsr', '0')}\n"
         f"gamescope_args={options.get('gamescope_args', '')}\n"
+        f"mangohud={options.get('mangohud', '0')}\n"
     )
 
 
@@ -282,27 +328,32 @@ def load_runners(wrapper: str):
 
 
 def gamescope_args(options: dict) -> list[str]:
+    args = []
     if options.get("gamescope") != "1":
-        return []
-    args = ["--gamescope"]
-    if options.get("gamescope_fullscreen", "1") != "1":
-        args.append("--gamescope-windowed")
-    if options.get("gamescope_res"):
-        args.extend(["--gamescope-res", options["gamescope_res"]])
-    if options.get("gamescope_fps"):
-        args.extend(["--gamescope-fps", options["gamescope_fps"]])
-    if options.get("gamescope_fsr") == "1":
-        args.append("--gamescope-fsr")
-    if options.get("gamescope_args"):
-        args.extend(["--gamescope-args", options["gamescope_args"]])
+        pass
+    else:
+        args.append("--gamescope")
+        if options.get("gamescope_fullscreen", "0") == "1":
+            args.append("--fullscreen")
+        if options.get("gamescope_res"):
+            args.extend(["--res", options["gamescope_res"]])
+        if options.get("gamescope_fps"):
+            args.extend(["--fps", options["gamescope_fps"]])
+        if options.get("gamescope_fsr") == "1":
+            args.append("--fsr")
+        if options.get("gamescope_args"):
+            args.extend(["--args", options["gamescope_args"]])
+    if options.get("mangohud") == "1":
+        args.append("--mangohud")
     return args
 
 
 def gamescope_summary(options: dict) -> str:
+    suffix = ", MangoHud" if options.get("mangohud") == "1" else ""
     if options.get("gamescope") != "1":
-        return "Gamescope: " + ("关闭" if ZH else "off")
+        return "Gamescope: " + ("关闭" if ZH else "off") + suffix
     parts = ["Gamescope"]
-    parts.append("全屏" if options.get("gamescope_fullscreen", "1") == "1" and ZH else "fullscreen" if options.get("gamescope_fullscreen", "1") == "1" else "窗口" if ZH else "windowed")
+    parts.append("全屏" if options.get("gamescope_fullscreen", "0") == "1" and ZH else "fullscreen" if options.get("gamescope_fullscreen", "0") == "1" else "窗口" if ZH else "windowed")
     if options.get("gamescope_res"):
         parts.append(options["gamescope_res"])
     if options.get("gamescope_fps"):
@@ -311,18 +362,24 @@ def gamescope_summary(options: dict) -> str:
         parts.append("FSR")
     if options.get("gamescope_args"):
         parts.append(options["gamescope_args"])
+    if options.get("mangohud") == "1":
+        parts.append("MangoHud")
     return ", ".join(parts)
 
 
 class SelectorApp(Gtk.Application):
     def __init__(self, exe: Path):
-        super().__init__(application_id="io.github.shorin.proton_wrapper_select")
+        super().__init__(application_id="io.github.shorin.proton_wrapper_configure")
         self.exe = exe
         self.wrapper = resolve_wrapper()
         self.cache_file = cache_file_for(exe)
+        self.mangohud_available = has_mangohud()
         self.window = None
         self.prefix_entry = None
         self.selected_runner = None
+        self.runners = []
+        self.runner_combo = None
+        self.runner_detail = None
         self.gamescope_check = None
         self.fullscreen_check = None
         self.res_combo = None
@@ -330,9 +387,12 @@ class SelectorApp(Gtk.Application):
         self.fps_combo = None
         self.custom_fps_entry = None
         self.fsr_check = None
+        self.mangohud_check = None
+        self.mangohud_missing_label = None
         self.extra_args_entry = None
 
     def do_activate(self):
+        sync_color_scheme()
         install_css()
         cache = read_cache(self.cache_file)
         if cache:
@@ -361,7 +421,7 @@ class SelectorApp(Gtk.Application):
 
     def show_cache_window(self, cache):
         self.window = Gtk.ApplicationWindow(application=self, title=TEXT["title"])
-        self.window.set_default_size(560, 300)
+        self.window.set_default_size(620, 420)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         outer.set_margin_top(20)
@@ -373,24 +433,27 @@ class SelectorApp(Gtk.Application):
         heading.add_css_class("title-2")
         outer.append(heading)
 
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 
-        content.append(section(TEXT["prefix"]))
+        prefix_card = card(TEXT["prefix"])
         prefix = Gtk.Label(label=cache["prefix"], xalign=0, wrap=True)
         prefix.add_css_class("dim-label")
         prefix.set_max_width_chars(58)
-        content.append(prefix)
+        prefix_card.append(prefix)
+        content.append(prefix_card)
 
-        content.append(section(TEXT["runner"]))
+        runner_card = card(TEXT["runner"])
         runner = Gtk.Label(label=cache["runner"], xalign=0, wrap=True)
         runner.add_css_class("dim-label")
         runner.set_max_width_chars(58)
-        content.append(runner)
+        runner_card.append(runner)
+        content.append(runner_card)
 
-        content.append(section(TEXT["display"]))
+        display_card = card(TEXT["display"])
         display = Gtk.Label(label=gamescope_summary(cache), xalign=0, wrap=True)
         display.add_css_class("dim-label")
-        content.append(display)
+        display_card.append(display)
+        content.append(display_card)
 
         question = Gtk.Label(label=TEXT["cached_question"], xalign=0)
         content.append(question)
@@ -406,7 +469,7 @@ class SelectorApp(Gtk.Application):
         reselect = Gtk.Button(label=TEXT["reselect"])
         run = Gtk.Button(label=TEXT["run"])
         cancel.connect("clicked", lambda _b: self.quit())
-        reselect.connect("clicked", lambda _b: (self.window.close(), self.show_select_window()))
+        reselect.connect("clicked", lambda _b: (self.window.close(), self.show_select_window(cache)))
         run.connect("clicked", lambda _b: self.run_with(cache["prefix"], cache["runner"], cache))
         buttons.append(cancel)
         buttons.append(reselect)
@@ -416,7 +479,7 @@ class SelectorApp(Gtk.Application):
         self.window.set_child(outer)
         self.window.present()
 
-    def show_select_window(self):
+    def show_select_window(self, initial: dict | None = None):
         self.window = Gtk.ApplicationWindow(application=self, title=TEXT["title"])
         self.window.set_default_size(820, 620)
 
@@ -434,55 +497,57 @@ class SelectorApp(Gtk.Application):
         program.add_css_class("dim-label")
         outer.append(program)
 
-        outer.append(section(TEXT["prefix"], TEXT["prefix_desc"]))
+        prefix_card = card(TEXT["prefix"], TEXT["prefix_desc"])
         prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.prefix_entry = Gtk.Entry(placeholder_text=TEXT["prefix"], hexpand=True)
+        self.prefix_entry.set_text((initial or {}).get("prefix") or default_prefix())
         browse = Gtk.Button(label=TEXT["browse"])
         browse.connect("clicked", self.on_browse)
         prefix_box.append(self.prefix_entry)
         prefix_box.append(browse)
-        outer.append(prefix_box)
+        prefix_card.append(prefix_box)
+        outer.append(prefix_card)
 
-        outer.append(section(TEXT["runner"], TEXT["runner_desc"]))
-        runners = load_runners(self.wrapper)
-        list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
-        list_box.add_css_class("runner-list")
-        for index, runner in enumerate(runners):
-            row = Gtk.ListBoxRow()
-            row.runner_path = runner["path"]
-            row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            row_box.set_margin_top(8)
-            row_box.set_margin_bottom(8)
-            row_box.set_margin_start(12)
-            row_box.set_margin_end(12)
-            title = Gtk.Label(label=runner["name"], xalign=0)
-            title.add_css_class("heading")
-            detail = Gtk.Label(label=f'{runner["type"]} · {runner["source"]}\n{runner["path"]}', xalign=0, wrap=True)
-            detail.add_css_class("dim-label")
-            row_box.append(title)
-            row_box.append(detail)
-            row.set_child(row_box)
-            list_box.append(row)
-            if index == 0:
-                self.selected_runner = runner["path"]
-        list_box.connect("row-selected", self.on_runner_selected)
-        if runners:
-            list_box.select_row(list_box.get_row_at_index(0))
+        runner_card = card(TEXT["runner"], TEXT["runner_desc"])
+        self.runners = load_runners(self.wrapper)
+        runner_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.runner_combo = Gtk.ComboBoxText(hexpand=False)
+        self.runner_combo.set_size_request(260, -1)
+        initial_runner = (initial or {}).get("runner", "")
+        active_index = 0
+        for index, runner in enumerate(self.runners):
+            self.runner_combo.append(str(index), runner_label(runner))
+            if runner["path"] == initial_runner:
+                active_index = index
+        if self.runners:
+            self.runner_combo.set_active_id(str(active_index))
+            self.selected_runner = self.runners[active_index]["path"]
+        self.runner_combo.connect("changed", self.on_runner_changed)
+        runner_box.append(self.runner_combo)
+        runner_card.append(runner_box)
 
-        scroll = Gtk.ScrolledWindow(vexpand=True)
-        scroll.set_child(list_box)
-        outer.append(scroll)
+        self.runner_detail = Gtk.Label(xalign=0, wrap=True)
+        self.runner_detail.add_css_class("dim-label")
+        runner_card.append(self.runner_detail)
+        outer.append(runner_card)
+        self.update_runner_detail()
 
-        outer.append(section(TEXT["display"], TEXT["display_desc"]))
+        display_card = card(TEXT["display"])
         display_box = Gtk.Grid(column_spacing=16, row_spacing=8)
         display_box.set_hexpand(True)
+        self.mangohud_check = Gtk.CheckButton(label=TEXT["mangohud"])
+        self.mangohud_check.set_active(self.mangohud_available and (initial or {}).get("mangohud", "0") == "1")
+        self.mangohud_check.set_sensitive(self.mangohud_available)
+        display_box.attach(self.mangohud_check, 0, 0, 2, 1)
+
         self.gamescope_check = Gtk.CheckButton(label=TEXT["use_gamescope"])
+        self.gamescope_check.set_active((initial or {}).get("gamescope", "0") == "1")
         self.gamescope_check.connect("toggled", self.on_gamescope_toggled)
-        display_box.attach(self.gamescope_check, 0, 0, 1, 1)
+        display_box.attach(self.gamescope_check, 0, 1, 1, 1)
 
         self.fullscreen_check = Gtk.CheckButton(label=TEXT["fullscreen"])
-        self.fullscreen_check.set_active(True)
-        display_box.attach(self.fullscreen_check, 0, 1, 1, 1)
+        self.fullscreen_check.set_active((initial or {}).get("gamescope_fullscreen", "0") == "1")
+        display_box.attach(self.fullscreen_check, 0, 2, 1, 1)
 
         res_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         res_label = Gtk.Label(label=TEXT["resolution"], xalign=0)
@@ -492,14 +557,21 @@ class SelectorApp(Gtk.Application):
         for value in resolution_options():
             label = TEXT["unset"] if value == "unset" else TEXT["custom"] if value == "custom" else value
             self.res_combo.append(value, label)
-        self.res_combo.set_active_id("unset")
+        initial_res = (initial or {}).get("gamescope_res", "")
+        res_options = resolution_options()
+        if initial_res and initial_res not in res_options:
+            self.res_combo.set_active_id("custom")
+        else:
+            self.res_combo.set_active_id(initial_res or "unset")
         self.res_combo.connect("changed", self.on_display_option_changed)
         self.custom_res_entry = Gtk.Entry(placeholder_text=TEXT["custom_resolution"], hexpand=True)
+        if initial_res:
+            self.custom_res_entry.set_text(initial_res)
         self.custom_res_entry.set_visible(False)
         res_box.append(res_label)
         res_box.append(self.res_combo)
         res_box.append(self.custom_res_entry)
-        display_box.attach(res_box, 1, 0, 1, 1)
+        display_box.attach(res_box, 1, 1, 1, 1)
 
         fps_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         fps_label = Gtk.Label(label=TEXT["fps"], xalign=0)
@@ -509,32 +581,45 @@ class SelectorApp(Gtk.Application):
         for value in fps_options():
             label = TEXT["unlimited"] if value == "unset" else TEXT["custom"] if value == "custom" else value
             self.fps_combo.append(value, label)
-        self.fps_combo.set_active_id("unset")
+        initial_fps = (initial or {}).get("gamescope_fps", "")
+        fps_values = fps_options()
+        if initial_fps and initial_fps not in fps_values:
+            self.fps_combo.set_active_id("custom")
+        else:
+            self.fps_combo.set_active_id(initial_fps or "unset")
         self.fps_combo.connect("changed", self.on_display_option_changed)
         self.custom_fps_entry = Gtk.Entry(placeholder_text=TEXT["custom_fps"], hexpand=True)
+        if initial_fps:
+            self.custom_fps_entry.set_text(initial_fps)
         self.custom_fps_entry.set_visible(False)
         fps_box.append(fps_label)
         fps_box.append(self.fps_combo)
         fps_box.append(self.custom_fps_entry)
-        display_box.attach(fps_box, 1, 1, 1, 1)
+        display_box.attach(fps_box, 1, 2, 1, 1)
 
         self.fsr_check = Gtk.CheckButton(label=TEXT["fsr"])
-        display_box.attach(self.fsr_check, 0, 2, 2, 1)
-        fsr_desc = Gtk.Label(label=TEXT["fsr_desc"], xalign=0, wrap=True)
-        fsr_desc.add_css_class("dim-label")
-        display_box.attach(fsr_desc, 0, 3, 2, 1)
+        self.fsr_check.set_active((initial or {}).get("gamescope_fsr", "0") == "1")
+        display_box.attach(self.fsr_check, 0, 3, 2, 1)
+        extra_row = 4
+        if not self.mangohud_available:
+            self.mangohud_missing_label = Gtk.Label(label=TEXT["mangohud_missing"], xalign=0, wrap=True)
+            self.mangohud_missing_label.add_css_class("dim-label")
+            display_box.attach(self.mangohud_missing_label, 0, 4, 2, 1)
+            extra_row = 5
 
         extra_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         extra_label = Gtk.Label(label=TEXT["extra_args"], xalign=0)
         extra_label.set_size_request(88, -1)
         self.extra_args_entry = Gtk.Entry(placeholder_text="--mangoapp --force-grab-cursor", hexpand=True)
+        self.extra_args_entry.set_text((initial or {}).get("gamescope_args", ""))
         extra_box.append(extra_label)
         extra_box.append(self.extra_args_entry)
-        display_box.attach(extra_box, 0, 4, 2, 1)
+        display_box.attach(extra_box, 0, extra_row, 2, 1)
         extra_desc = Gtk.Label(label=TEXT["extra_args_desc"], xalign=0, wrap=True)
         extra_desc.add_css_class("dim-label")
-        display_box.attach(extra_desc, 0, 5, 2, 1)
-        outer.append(display_box)
+        display_box.attach(extra_desc, 0, extra_row + 1, 2, 1)
+        display_card.append(display_box)
+        outer.append(display_card)
         self.on_gamescope_toggled(self.gamescope_check)
 
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -549,12 +634,33 @@ class SelectorApp(Gtk.Application):
 
         self.window.set_child(outer)
         self.window.present()
-        if not runners:
+        if not self.runners:
             self.show_error(TEXT["no_runner"])
 
-    def on_runner_selected(self, _list_box, row):
-        if row:
-            self.selected_runner = getattr(row, "runner_path", None)
+    def on_runner_changed(self, combo):
+        active_id = combo.get_active_id()
+        if active_id is None:
+            self.selected_runner = None
+            self.update_runner_detail()
+            return
+        index = int(active_id)
+        if 0 <= index < len(self.runners):
+            self.selected_runner = self.runners[index]["path"]
+        self.update_runner_detail()
+
+    def update_runner_detail(self):
+        if not self.runner_detail:
+            return
+        active_id = self.runner_combo.get_active_id() if self.runner_combo else None
+        if active_id is None:
+            self.runner_detail.set_text("")
+            return
+        index = int(active_id)
+        if 0 <= index < len(self.runners):
+            runner = self.runners[index]
+            self.runner_detail.set_text(f'{runner["type"]} · {runner["source"]}\n{runner["path"]}')
+        else:
+            self.runner_detail.set_text("")
 
     def on_browse(self, _button):
         dialog = Gtk.FileChooserNative(
@@ -616,6 +722,7 @@ class SelectorApp(Gtk.Application):
             "gamescope_fps": fps or "",
             "gamescope_fsr": "1" if self.fsr_check and self.fsr_check.get_active() else "0",
             "gamescope_args": self.extra_args_entry.get_text().strip() if self.extra_args_entry else "",
+            "mangohud": "1" if self.mangohud_check and self.mangohud_check.get_active() else "0",
         }
 
     def on_run(self, _button):

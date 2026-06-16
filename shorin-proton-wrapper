@@ -20,11 +20,12 @@ TARGET_ARGS=()
 LANG_OVERRIDE="${PROTON_LANG:-}"
 EXPORT_SHORTCUTS_QUIET=0
 GAMESCOPE=0
-GAMESCOPE_FULLSCREEN=1
+GAMESCOPE_FULLSCREEN=0
 GAMESCOPE_RES=""
 GAMESCOPE_FPS=""
 GAMESCOPE_FSR=0
 GAMESCOPE_EXTRA=""
+MANGOHUD=0
 
 if [[ "$0" == */* ]]; then
   SELF_PATH="$(realpath -m "$0")"
@@ -68,12 +69,8 @@ Options:
   --remove ge|dw          remove runner from ~/.local/share/proton/runners
   --remove-steam ge|dw    remove runner from Steam, omit ge|dw to remove all wrapper-installed runners
   --remove-lutris ge|dw   remove runner from Lutris, omit ge|dw to remove all wrapper-installed runners
-  --gamescope             run target through Gamescope, fullscreen by default
-  --gamescope-windowed    run Gamescope in a window
-  --gamescope-res WxH     set game render resolution, e.g. 1920x1080
-  --gamescope-fps FPS     limit frame rate
-  --gamescope-fsr         enable FSR upscaling
-  --gamescope-args ARGS   append custom Gamescope arguments
+  --gs, --gamescope       run with Gamescope; use for compatibility, custom resolution/FPS, or FSR
+  --mangohud              enable MangoHud performance overlay
   --help-full             show detailed help
 
 Examples:
@@ -84,6 +81,7 @@ Examples:
   shorin-proton-wrapper --install dw
   shorin-proton-wrapper --install-steam dw
   shorin-proton-wrapper --download ge --version GE-Proton10-34
+  shorin-proton-wrapper --gamescope --res 1920x1080 --fps 30 --fsr /path/to/app.exe
   shorin-proton-wrapper --list-version dw
   shorin-proton-wrapper --update
 EOF
@@ -111,12 +109,8 @@ usage_zh() {
   --remove ge|dw          移除默认位置中已安装的运行器
   --remove-steam ge|dw    移除 Steam 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
   --remove-lutris ge|dw   移除 Lutris 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
-  --gamescope             使用 Gamescope 显示适配，默认全屏
-  --gamescope-windowed    使用 Gamescope 窗口模式
-  --gamescope-res 宽x高   设置游戏渲染分辨率，例如 1920x1080
-  --gamescope-fps 帧率    限制帧率
-  --gamescope-fsr         启用 FSR 超分辨率
-  --gamescope-args 参数   追加自定义 Gamescope 参数
+  --gs, --gamescope       用 Gamescope 运行。默认窗口化；需要自定义分辨率、帧率、FSR 或遇到显示兼容问题时使用
+  --mangohud              启用 MangoHud 性能叠加层
   --help-full             显示完整说明
 
 示例:
@@ -127,6 +121,7 @@ usage_zh() {
   shorin-proton-wrapper --install dw
   shorin-proton-wrapper --install-steam dw
   shorin-proton-wrapper --download ge --version GE-Proton10-34
+  shorin-proton-wrapper --gamescope --res 1920x1080 --fps 30 --fsr /path/to/app.exe
   shorin-proton-wrapper --list-version dw
   shorin-proton-wrapper --update
 EOF
@@ -247,6 +242,54 @@ usage_full() {
     usage_full_zh
   else
     usage_full_en
+  fi
+}
+
+gamescope_usage_en() {
+  cat <<'EOF'
+Usage:
+  shorin-proton-wrapper --gamescope [gamescope options] app.exe [args...]
+
+Gamescope options:
+  --windowed             run Gamescope in a window (default)
+  --fullscreen           run Gamescope fullscreen
+  --res WIDTHxHEIGHT     set game render resolution, e.g. 1920x1080
+  --fps FPS              limit frame rate
+  --fsr                  enable FSR upscaling
+  --args ARGS            append custom Gamescope arguments
+  --mangohud             enable MangoHud performance overlay
+  -h, --help             show this help
+
+Example:
+  shorin-proton-wrapper --gamescope --windowed --res 1920x1080 --fps 30 --fsr --mangohud game.exe
+EOF
+}
+
+gamescope_usage_zh() {
+  cat <<'EOF'
+用法:
+  shorin-proton-wrapper --gamescope [Gamescope 选项] app.exe [参数...]
+
+Gamescope 选项:
+  --windowed             窗口模式 (默认)
+  --fullscreen           全屏模式
+  --res 宽x高            设置游戏渲染分辨率，例如 1920x1080
+  --fps 帧率             限制帧率
+  --fsr                  启用 FSR 超分辨率
+  --args 参数            追加自定义 Gamescope 参数
+  --mangohud             启用 MangoHud 性能叠加层
+  -h, --help             显示本帮助
+
+示例:
+  shorin-proton-wrapper --gamescope --windowed --res 1920x1080 --fps 30 --fsr --mangohud game.exe
+EOF
+}
+
+gamescope_usage() {
+  if [[ "$(ui_lang)" == "zh" ]]; then
+    gamescope_usage_zh
+  else
+    gamescope_usage_en
   fi
 }
 
@@ -1042,7 +1085,9 @@ run_proton_command() {
   local runner="$1"
   shift
   mkdir -p "$PREFIX"
+  prepare_mangohud_env
   env \
+    "${MANGOHUD_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1056,7 +1101,9 @@ exec_proton_command() {
   local runner="$1"
   shift
   mkdir -p "$PREFIX"
+  prepare_mangohud_env
   exec env \
+    "${MANGOHUD_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1070,14 +1117,16 @@ run_wine_command() {
   local runner="$1"
   shift
   mkdir -p "$PREFIX/pfx"
-  env WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
+  prepare_mangohud_env
+  env "${MANGOHUD_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
 exec_wine_command() {
   local runner="$1"
   shift
   mkdir -p "$PREFIX/pfx"
-  exec env WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
+  prepare_mangohud_env
+  exec env "${MANGOHUD_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
 validate_resolution() {
@@ -1086,6 +1135,13 @@ validate_resolution() {
 
 validate_number() {
   [[ "$1" =~ ^[0-9]+$ ]] || die "invalid number: $1"
+}
+
+prepare_mangohud_env() {
+  MANGOHUD_ENV=()
+  [[ $MANGOHUD -eq 1 ]] || return 0
+  command -v mangohud >/dev/null 2>&1 || die "mangohud is not installed"
+  MANGOHUD_ENV=("MANGOHUD=1")
 }
 
 append_gamescope_extra_args() {
@@ -1145,7 +1201,9 @@ run_gamescope_proton_command() {
   shift
   mkdir -p "$PREFIX"
   build_gamescope_args
+  prepare_mangohud_env
   env \
+    "${MANGOHUD_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1160,7 +1218,8 @@ run_gamescope_wine_command() {
   shift
   mkdir -p "$PREFIX/pfx"
   build_gamescope_args
-  env WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
+  prepare_mangohud_env
+  env "${MANGOHUD_ENV[@]}" WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
 }
 
 init_prefix() {
@@ -1448,39 +1507,60 @@ parse_args() {
           shift
         done
         ;;
-      --gamescope)
+      --gs|--gamescope)
         GAMESCOPE=1
         shift
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            -h|--help)
+              gamescope_usage
+              exit 0
+              ;;
+            --windowed)
+              GAMESCOPE_FULLSCREEN=0
+              shift
+              ;;
+            --fullscreen)
+              GAMESCOPE_FULLSCREEN=1
+              shift
+              ;;
+            --res)
+              [[ $# -ge 2 ]] || die "$1 requires WIDTHxHEIGHT"
+              validate_resolution "$2"
+              GAMESCOPE_RES="$2"
+              shift 2
+              ;;
+            --fps)
+              [[ $# -ge 2 ]] || die "$1 requires FPS"
+              validate_number "$2"
+              GAMESCOPE_FPS="$2"
+              shift 2
+              ;;
+            --fsr)
+              GAMESCOPE_FSR=1
+              shift
+              ;;
+            --args)
+              [[ $# -ge 2 ]] || die "$1 requires arguments"
+              GAMESCOPE_EXTRA="$2"
+              shift 2
+              ;;
+            --)
+              shift
+              break
+              ;;
+            --*)
+              break
+              ;;
+            *)
+              break
+              ;;
+          esac
+        done
         ;;
-      --gamescope-windowed)
-        GAMESCOPE=1
-        GAMESCOPE_FULLSCREEN=0
+      --mangohud)
+        MANGOHUD=1
         shift
-        ;;
-      --gamescope-res)
-        [[ $# -ge 2 ]] || die "$1 requires WIDTHxHEIGHT"
-        validate_resolution "$2"
-        GAMESCOPE=1
-        GAMESCOPE_RES="$2"
-        shift 2
-        ;;
-      --gamescope-fps)
-        [[ $# -ge 2 ]] || die "$1 requires FPS"
-        validate_number "$2"
-        GAMESCOPE=1
-        GAMESCOPE_FPS="$2"
-        shift 2
-        ;;
-      --gamescope-fsr)
-        GAMESCOPE=1
-        GAMESCOPE_FSR=1
-        shift
-        ;;
-      --gamescope-args)
-        [[ $# -ge 2 ]] || die "$1 requires arguments"
-        GAMESCOPE=1
-        GAMESCOPE_EXTRA="$2"
-        shift 2
         ;;
       -d|--directory)
         [[ $# -ge 2 ]] || die "$1 requires a directory"
@@ -1642,7 +1722,13 @@ case "$ACTION" in
     remove_all_runners
     ;;
   "")
-    [[ -n "$TARGET" ]] || die "no target provided"
+    if [[ -z "$TARGET" ]]; then
+      if [[ $GAMESCOPE -eq 1 ]]; then
+        gamescope_usage
+        exit 0
+      fi
+      die "no target provided"
+    fi
     run_target
     ;;
   *)

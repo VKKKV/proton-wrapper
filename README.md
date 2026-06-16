@@ -17,15 +17,20 @@ shorin-proton-wrapper -p ~/Games/foo-prefix --export-shortcuts
 
 ## Gamescope 显示适配
 
-自定义环境选择器支持 Gamescope、全屏、游戏分辨率、帧率限制和 FSR。CLI 也可以直接使用：
+运行环境设置界面支持 Gamescope、全屏、游戏分辨率、帧率限制、FSR 和 MangoHud。默认窗口化。CLI 也可以直接使用：
 
 ```sh
-shorin-proton-wrapper --gamescope --gamescope-res 1280x720 --gamescope-fps 60 --gamescope-fsr game.exe
+shorin-proton-wrapper --gamescope --res 1280x720 --fps 60 --fsr game.exe
 ```
 
-FSR 会让游戏以较低分辨率渲染后放大到屏幕，通常可提升性能，但可能降低清晰度。
+MangoHud 为可选功能，未安装时设置界面会禁用对应选项：
+
+```sh
+shorin-proton-wrapper --mangohud game.exe
+```
+
 高级用户可以追加原生 Gamescope 参数：
 
 ```sh
-shorin-proton-wrapper --gamescope --gamescope-args "--mangoapp" game.exe
+shorin-proton-wrapper --gamescope --args "--mangoapp" game.exe
 ```
