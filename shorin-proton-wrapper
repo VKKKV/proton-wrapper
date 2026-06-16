@@ -45,6 +45,7 @@ RUNNER_SOURCES=()
 RUNNER_NAMES=()
 RUNNER_PATHS=()
 DEBUG_ENV=()
+CACHED_ENV=()
 declare -A RUNNER_SEEN=()
 
 [[ -n "${PROTON_PREFIX:-}" ]] && PREFIX_EXPLICIT=1
@@ -329,6 +330,17 @@ die() {
   exit 1
 }
 
+die_runner_not_found() {
+  local runner="$1"
+  if [[ "$(ui_lang)" == "zh" ]]; then
+    die "未找到或不支持的运行器: $runner
+使用 --list-runner 查看可用运行器，或使用 --runner ge/dw。"
+  else
+    die "runner not found or unsupported: $runner
+Use --list-runner to see available runners, or use --runner ge/dw."
+  fi
+}
+
 expand_path() {
   local path="$1"
   case "$path" in
@@ -605,7 +617,7 @@ try_resolve_runner_from_prefix() {
 }
 
 resolve_runner_arg() {
-  try_resolve_runner_arg "$1" || die "runner not found or unsupported: $1"
+  try_resolve_runner_arg "$1" || die_runner_not_found "$1"
 }
 
 try_select_runner() {
@@ -634,7 +646,7 @@ select_runner() {
   fi
 
   if [[ -n "$RUNNER_ARG" ]]; then
-    die "no Proton or Wine runner found. Use --runner PATH, or install one with shorin-proton-wrapper --install dw"
+    die_runner_not_found "$RUNNER_ARG"
   fi
 
   ensure_runner_product dw || die "failed to install runner: dw"
@@ -854,9 +866,17 @@ fetch_file() {
   tmp="$dest.part"
   rm -f "$tmp"
   if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --progress-bar -o "$tmp" "$url"
+    if ! curl -L --fail --progress-bar -o "$tmp" "$url"; then
+      rm -f "$tmp"
+      printf 'shorin-proton-wrapper: download failed: %s -> %s\n' "$url" "$dest" >&2
+      return 1
+    fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "$tmp" "$url"
+    if ! wget -O "$tmp" "$url"; then
+      rm -f "$tmp"
+      printf 'shorin-proton-wrapper: download failed: %s -> %s\n' "$url" "$dest" >&2
+      return 1
+    fi
   else
     die "curl or wget is required for downloads"
   fi
@@ -865,7 +885,11 @@ fetch_file() {
 
 verify_archive() {
   local dir="$1" checksum_name="$2"
-  (cd "$dir" && sha512sum -c "$checksum_name")
+  if ! (cd "$dir" && sha512sum -c "$checksum_name"); then
+    printf 'shorin-proton-wrapper: checksum verification failed: %s/%s\n' "$dir" "$checksum_name" >&2
+    printf 'shorin-proton-wrapper: the downloaded archive may be corrupted. Delete the archive and checksum file, then retry.\n' >&2
+    return 1
+  fi
 }
 
 find_extracted_runner_root() {
@@ -924,9 +948,9 @@ download_runner() {
   dir="$(expand_path "${DOWNLOAD_DIR:-$(xdg_download_dir)}")"
 
   mkdir -p "$dir"
-  fetch_file "$archive_url" "$dir/$archive_name"
-  fetch_file "$checksum_url" "$dir/$checksum_name"
-  verify_archive "$dir" "$checksum_name"
+  fetch_file "$archive_url" "$dir/$archive_name" || exit 1
+  fetch_file "$checksum_url" "$dir/$checksum_name" || exit 1
+  verify_archive "$dir" "$checksum_name" || exit 1
 
   printf 'Downloaded: %s\n' "$dir/$archive_name"
   printf 'Checksum:   %s\n' "$dir/$checksum_name"
@@ -950,6 +974,14 @@ install_runner() {
   mkdir -p "$download_dir" "$install_dir"
 
   use_existing=0
+  temp_download_dir=""
+  extract_dir=""
+
+  cleanup_install_failure() {
+    [[ -n "$extract_dir" ]] && rm -rf "$extract_dir"
+    [[ -n "$temp_download_dir" ]] && rm -rf "$temp_download_dir"
+  }
+
   if [[ -s "$download_dir/$archive_name" && -s "$download_dir/$checksum_name" ]]; then
     work_dir="$download_dir"
     use_existing=1
@@ -957,26 +989,50 @@ install_runner() {
   else
     temp_download_dir="$(mktemp -d "$download_dir/.proton-install.XXXXXX")"
     work_dir="$temp_download_dir"
-    fetch_file "$archive_url" "$work_dir/$archive_name"
-    fetch_file "$checksum_url" "$work_dir/$checksum_name"
+    if ! fetch_file "$archive_url" "$work_dir/$archive_name"; then
+      cleanup_install_failure
+      exit 1
+    fi
+    if ! fetch_file "$checksum_url" "$work_dir/$checksum_name"; then
+      cleanup_install_failure
+      exit 1
+    fi
   fi
 
-  verify_archive "$work_dir" "$checksum_name"
+  if ! verify_archive "$work_dir" "$checksum_name"; then
+    cleanup_install_failure
+    exit 1
+  fi
 
   extract_dir="$(mktemp -d)"
-  tar -xf "$work_dir/$archive_name" -C "$extract_dir"
-  root="$(find_extracted_runner_root "$extract_dir")" || die "extracted archive does not contain a proton runner"
+  if ! tar -xf "$work_dir/$archive_name" -C "$extract_dir"; then
+    cleanup_install_failure
+    die "failed to extract archive: $work_dir/$archive_name
+The archive may be corrupted. Delete it and retry."
+  fi
+  root="$(find_extracted_runner_root "$extract_dir")" || {
+    cleanup_install_failure
+    die "extracted archive does not contain a proton runner: $work_dir/$archive_name"
+  }
   if [[ -e "$target" && ! -x "$target/proton" ]]; then
-    rm -rf "$extract_dir"
+    cleanup_install_failure
     die "install target exists but is not a runner: $target"
   fi
-  rm -rf "$target"
-  mv "$root" "$target"
+  if ! rm -rf "$target"; then
+    cleanup_install_failure
+    die "failed to remove old install target: $target"
+  fi
+  if ! mv "$root" "$target"; then
+    cleanup_install_failure
+    die "failed to install runner to: $target"
+  fi
   printf '%s\n' "$tag" > "$target/.shorin-proton-wrapper-version"
   rm -rf "$extract_dir"
+  extract_dir=""
 
   if [[ $use_existing -eq 0 ]]; then
     rm -rf "$work_dir"
+    temp_download_dir=""
   elif [[ $CLEAN -eq 1 ]]; then
     rm -f "$download_dir/$archive_name" "$download_dir/$checksum_name"
   fi
@@ -1128,6 +1184,7 @@ run_proton_command() {
   env \
     "${MANGOHUD_ENV[@]}" \
     "${DEBUG_ENV[@]}" \
+    "${CACHED_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1145,6 +1202,7 @@ exec_proton_command() {
   exec env \
     "${MANGOHUD_ENV[@]}" \
     "${DEBUG_ENV[@]}" \
+    "${CACHED_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1159,7 +1217,7 @@ run_wine_command() {
   shift
   mkdir -p "$PREFIX/pfx"
   prepare_mangohud_env
-  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
+  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
 exec_wine_command() {
@@ -1167,7 +1225,7 @@ exec_wine_command() {
   shift
   mkdir -p "$PREFIX/pfx"
   prepare_mangohud_env
-  exec env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
+  exec env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
 validate_resolution() {
@@ -1246,6 +1304,7 @@ run_gamescope_proton_command() {
   env \
     "${MANGOHUD_ENV[@]}" \
     "${DEBUG_ENV[@]}" \
+    "${CACHED_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1261,7 +1320,7 @@ run_gamescope_wine_command() {
   mkdir -p "$PREFIX/pfx"
   build_gamescope_args
   prepare_mangohud_env
-  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
+  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" "${CACHED_ENV[@]}" WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
 }
 
 init_prefix() {
@@ -1279,14 +1338,86 @@ ensure_initialized() {
   fi
 }
 
+apply_cached_env_vars() {
+  local encoded="$1" tmp status
+  CACHED_ENV=()
+  [[ -n "$encoded" ]] || return 0
+  tmp="$(mktemp)"
+  python3 - "$encoded" > "$tmp" <<'PY'
+import shlex
+import sys
+from urllib.parse import unquote
+
+text = unquote(sys.argv[1])
+try:
+    parts = shlex.split(text)
+except ValueError:
+    parts = [line.strip() for line in text.splitlines()]
+for part in parts:
+    if "=" not in part or part.startswith("="):
+        continue
+    sys.stdout.write(part)
+    sys.stdout.write("\0")
+PY
+  status=$?
+  if [[ $status -eq 0 ]]; then
+    mapfile -d '' -t CACHED_ENV < "$tmp"
+  fi
+  rm -f "$tmp"
+}
+
+association_cache_file_for() {
+  local target_path="$1" cache_dir key
+  cache_dir="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper/associations"
+  key="$(printf '%s' "$target_path" | sha256sum | cut -d ' ' -f 1)"
+  printf '%s/%s.conf\n' "$cache_dir" "$key"
+}
+
+should_record_association() {
+  local target_path="$1" name
+  name="$(basename "$target_path")"
+  name="${name%.*}"
+  name="${name,,}"
+  case "$name" in
+    *setup*|*install*|*installer*|*uninstall*|unins*|*update*|*updater*|*patch*|*crash*|*helper*|*redist*|*vcredist*|*vc_redist*|dxsetup)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+record_default_association() {
+  local target_path="$1" cache_file
+  case "${target_path,,}" in
+    *.exe|*.lnk) ;;
+    *) return 0 ;;
+  esac
+  should_record_association "$target_path" || return 0
+  cache_file="$(association_cache_file_for "$target_path")"
+  [[ -e "$cache_file" ]] && return 0
+  mkdir -p "$(dirname "$cache_file")"
+  cat > "$cache_file" <<EOF
+exe=$target_path
+prefix=$PREFIX
+runner=$RESOLVED_RUNNER_PATH
+gamescope=$GAMESCOPE
+gamescope_fullscreen=$GAMESCOPE_FULLSCREEN
+gamescope_res=$GAMESCOPE_RES
+gamescope_fps=$GAMESCOPE_FPS
+gamescope_fsr=$GAMESCOPE_FSR
+gamescope_args=$GAMESCOPE_EXTRA
+mangohud=$MANGOHUD
+env_vars=
+source=auto
+EOF
+}
+
 apply_cached_association() {
   local target_path="$1" cache_dir key cache_file line name value
   local cache_prefix="" cache_runner="" cache_gamescope="0" cache_fullscreen="0"
-  local cache_res="" cache_fps="" cache_fsr="0" cache_args="" cache_mangohud="0"
+  local cache_res="" cache_fps="" cache_fsr="0" cache_args="" cache_mangohud="0" cache_env_vars=""
 
-  cache_dir="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper/associations"
-  key="$(printf '%s' "$target_path" | sha256sum | cut -d ' ' -f 1)"
-  cache_file="$cache_dir/$key.conf"
+  cache_file="$(association_cache_file_for "$target_path")"
   [[ -r "$cache_file" ]] || return 0
 
   while IFS= read -r line; do
@@ -1303,6 +1434,7 @@ apply_cached_association() {
       gamescope_fsr) cache_fsr="$value" ;;
       gamescope_args) cache_args="$value" ;;
       mangohud) cache_mangohud="$value" ;;
+      env_vars) cache_env_vars="$value" ;;
     esac
   done < "$cache_file"
 
@@ -1330,6 +1462,7 @@ apply_cached_association() {
   if [[ $MANGOHUD_EXPLICIT -eq 0 ]]; then
     MANGOHUD="$cache_mangohud"
   fi
+  apply_cached_env_vars "$cache_env_vars"
 }
 
 open_winecfg() {
@@ -1394,6 +1527,7 @@ run_target() {
   PREFIX="$(expand_path "$PREFIX")"
   select_runner
   ensure_initialized
+  record_default_association "$TARGET"
 
   case "${TARGET,,}" in
     *.lnk)
@@ -1502,10 +1636,6 @@ parse_args() {
         RUNNER_ARG="$2"
         RUNNER_EXPLICIT=1
         shift 2
-        while [[ $# -gt 0 && ! "$1" =~ ^- ]] && ! [[ -e "$RUNNER_ARG" || "$RUNNER_ARG" == */proton || "$RUNNER_ARG" == */wine || "$RUNNER_ARG" == */wine64 ]]; do
-          RUNNER_ARG="$RUNNER_ARG $1"
-          shift
-        done
         ;;
       --gs|--gamescope)
         GAMESCOPE=1

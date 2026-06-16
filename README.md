@@ -6,7 +6,11 @@
 
 灵感来自 Wine 的配置过程。安装 WIne 后运行 `winecfg` 会在 `~/.wine` 目录初始化前置运行环境。我借鉴并改良了这个设计，运行 exe 的默认行为是检测 `~/.proton` 是否存在，如果不存在则静默初始化。考虑到国内二游盛行，我选择了 `DW-Proton` 作为默认运行器。
 
-为了兼顾自由度，我额外做了一个名为 `设置Windows运行环境` 的打开方式。支持自定义前置环境目录、Proton 版本、MangoHud 帧数/性能屏显、GameScope 合成器运行等常用设置项。
+## 设置Widnows程序运行环境
+
+>`shorin-proton-wrapper-configure`
+
+为了兼顾自由度，我额外做了一个名为 `设置Windows程序运行环境` 的打开方式。支持自定义前置环境目录、Proton 版本、MangoHud 帧数/性能屏显、GameScope 合成器运行等常用设置项。
 
 ![](./pics/2.png)
 
@@ -15,6 +19,20 @@
 第一次设置之后会将设置项缓存至 `~/.cache/shorin-proton-wrapper`，以后使用 `运行Windows软件` 打开会自动读取缓存配置，如果再次用 `设置Windows软件运行环境` 打开，则会提示 `已保存的运行环境`，可自行决定要重新设置还是直接运行。
 
 ![](./pics/4.png)
+
+## Shorin Prton Wrapper 管理器
+
+>`shorin-proton-wrapper-manager`
+
+在每次运行 exe 都会自动进入管理器的仓库，通过 `icoextract` `python-pillow` 生成缩略图。支持导出趁虚到 Linux 应用菜单、重命名显示名称和 `.desktop` 名称、修改配置等功能。
+
+![](./pics/5.png)
+
+在进程卡死或者后它进程无法退出的时候可以在进程页面强制退出。
+
+![](./pics/6.png)
+
+## shorin-proton-wrapper
 
 另外还提供了 CLI 工具方便从终端进行 Proton 管理、exe 运行等操作。
 

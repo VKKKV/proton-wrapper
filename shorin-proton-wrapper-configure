@@ -7,7 +7,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import gi
 
@@ -40,12 +40,13 @@ TEXT = {
     "prefix_desc": "运行器会在此目录创建虚拟 C 盘，程序会在此环境中运行" if ZH else "The runner creates a virtual C drive here and runs the program in this environment",
     "runner_desc": "选择用于启动此程序的 Proton 或 Wine 运行器" if ZH else "Choose the Proton or Wine runner used to launch this program",
     "run": "开始运行" if ZH else "Start",
-    "reselect": "重新设置" if ZH else "Reconfigure",
+    "reselect": "修改配置" if ZH else "Edit Config",
     "cancel": "取消" if ZH else "Cancel",
     "choose_env": "设置运行环境" if ZH else "Configure runtime environment",
     "browse": "浏览" if ZH else "Browse",
-    "display": "显示适配" if ZH else "Display compatibility",
-    "display_desc": "" if ZH else "",
+    "display": "其他设置" if ZH else "Other Settings",
+    "gamescope": "Gamescope" if ZH else "Gamescope",
+    "gamescope_desc": "出现兼容问题时可以尝试使用 gamescope 运行" if ZH else "Try running with Gamescope when compatibility issues occur",
     "use_gamescope": "使用 Gamescope" if ZH else "Use Gamescope",
     "fullscreen": "全屏运行" if ZH else "Fullscreen",
     "resolution": "游戏分辨率" if ZH else "Game resolution",
@@ -56,7 +57,10 @@ TEXT = {
     "custom_resolution": "自定义分辨率，例如 1366x768" if ZH else "Custom resolution, e.g. 1366x768",
     "custom_fps": "自定义帧率" if ZH else "Custom FPS",
     "fsr": "FSR 超分辨率" if ZH else "FSR upscaling",
-    "mangohud": "MangoHud 性能叠加层" if ZH else "MangoHud performance overlay",
+    "mangohud": "MangoHud" if ZH else "MangoHud",
+    "mangohud_desc": "显示帧数和性能占用" if ZH else "Show FPS and performance usage",
+    "env_vars": "环境变量" if ZH else "Environment variables",
+    "env_vars_desc": "例如: DXVK_ASYNC=1 PROTON_NO_ESYNC=1" if ZH else "Example: DXVK_ASYNC=1 PROTON_NO_ESYNC=1",
     "mangohud_missing": "未安装 MangoHud" if ZH else "MangoHud is not installed",
     "extra_args": "额外参数" if ZH else "Extra arguments",
     "extra_args_desc": "高级选项：直接追加到 gamescope 命令。" if ZH else "Advanced: appended directly to the gamescope command.",
@@ -241,6 +245,20 @@ def has_mangohud() -> bool:
     return shutil.which("mangohud") is not None
 
 
+def env_from_text(value: str) -> dict[str, str]:
+    env = {}
+    try:
+        import shlex
+        parts = shlex.split(value)
+    except ValueError:
+        parts = [line.strip() for line in value.splitlines()]
+    for part in parts:
+        if "=" in part and not part.startswith("="):
+            key, val = part.split("=", 1)
+            env[key] = val
+    return env
+
+
 def cache_file_for(exe: Path) -> Path:
     cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     cache_dir = cache_home / "shorin-proton-wrapper" / "associations"
@@ -270,6 +288,7 @@ def read_cache(path: Path):
             "gamescope_fsr": data.get("gamescope_fsr", "0"),
             "gamescope_args": data.get("gamescope_args", ""),
             "mangohud": "1" if data.get("mangohud", "0") == "1" and has_mangohud() else "0",
+            "env_vars": unquote(data.get("env_vars", "")),
         }
     return None
 
@@ -286,6 +305,7 @@ def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
         f"gamescope_fsr={options.get('gamescope_fsr', '0')}\n"
         f"gamescope_args={options.get('gamescope_args', '')}\n"
         f"mangohud={options.get('mangohud', '0')}\n"
+        f"env_vars={quote(options.get('env_vars', ''))}\n"
     )
 
 
@@ -375,6 +395,7 @@ class SelectorApp(Gtk.Application):
         self.cache_file = cache_file_for(exe)
         self.mangohud_available = has_mangohud()
         self.window = None
+        self.exe_entry = None
         self.prefix_entry = None
         self.selected_runner = None
         self.runners = []
@@ -389,6 +410,7 @@ class SelectorApp(Gtk.Application):
         self.fsr_check = None
         self.mangohud_check = None
         self.mangohud_missing_label = None
+        self.env_vars_entry = None
         self.extra_args_entry = None
 
     def do_activate(self):
@@ -416,7 +438,9 @@ class SelectorApp(Gtk.Application):
         command = [self.wrapper, "-p", prefix, "--runner", runner]
         command.extend(gamescope_args(options))
         command.append(str(self.exe))
-        subprocess.Popen(command)
+        env = os.environ.copy()
+        env.update(env_from_text(options.get("env_vars", "")))
+        subprocess.Popen(command, env=env)
         self.quit()
 
     def show_cache_window(self, cache):
@@ -449,11 +473,21 @@ class SelectorApp(Gtk.Application):
         runner_card.append(runner)
         content.append(runner_card)
 
-        display_card = card(TEXT["display"])
-        display = Gtk.Label(label=gamescope_summary(cache), xalign=0, wrap=True)
-        display.add_css_class("dim-label")
-        display_card.append(display)
-        content.append(display_card)
+        gamescope_card = card(TEXT["gamescope"])
+        gamescope = Gtk.Label(label=gamescope_summary(cache), xalign=0, wrap=True)
+        gamescope.add_css_class("dim-label")
+        gamescope_card.append(gamescope)
+        content.append(gamescope_card)
+
+        other_card = card(TEXT["display"])
+        other_text = []
+        other_text.append(TEXT["mangohud"] + ": " + ("开" if ZH and cache.get("mangohud") == "1" else "关" if ZH else "on" if cache.get("mangohud") == "1" else "off"))
+        if cache.get("env_vars"):
+            other_text.append(TEXT["env_vars"] + ": " + cache["env_vars"])
+        other = Gtk.Label(label="\n".join(other_text), xalign=0, wrap=True)
+        other.add_css_class("dim-label")
+        other_card.append(other)
+        content.append(other_card)
 
         question = Gtk.Label(label=TEXT["cached_question"], xalign=0)
         content.append(question)
@@ -493,9 +527,16 @@ class SelectorApp(Gtk.Application):
         heading.add_css_class("title-2")
         outer.append(heading)
 
-        program = Gtk.Label(label=str(self.exe), xalign=0, wrap=True)
-        program.add_css_class("dim-label")
-        outer.append(program)
+        exe_card = card(TEXT["program"], TEXT["program_desc"])
+        exe_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.exe_entry = Gtk.Entry(placeholder_text=TEXT["program"], hexpand=True)
+        self.exe_entry.set_text(str(self.exe))
+        exe_browse = Gtk.Button(label=TEXT["browse"])
+        exe_browse.connect("clicked", self.on_browse_exe)
+        exe_box.append(self.exe_entry)
+        exe_box.append(exe_browse)
+        exe_card.append(exe_box)
+        outer.append(exe_card)
 
         prefix_card = card(TEXT["prefix"], TEXT["prefix_desc"])
         prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -532,22 +573,18 @@ class SelectorApp(Gtk.Application):
         outer.append(runner_card)
         self.update_runner_detail()
 
-        display_card = card(TEXT["display"])
-        display_box = Gtk.Grid(column_spacing=16, row_spacing=8)
-        display_box.set_hexpand(True)
-        self.mangohud_check = Gtk.CheckButton(label=TEXT["mangohud"])
-        self.mangohud_check.set_active(self.mangohud_available and (initial or {}).get("mangohud", "0") == "1")
-        self.mangohud_check.set_sensitive(self.mangohud_available)
-        display_box.attach(self.mangohud_check, 0, 0, 2, 1)
+        gamescope_card = card(TEXT["gamescope"], TEXT["gamescope_desc"])
+        gamescope_box = Gtk.Grid(column_spacing=16, row_spacing=8)
+        gamescope_box.set_hexpand(True)
 
         self.gamescope_check = Gtk.CheckButton(label=TEXT["use_gamescope"])
         self.gamescope_check.set_active((initial or {}).get("gamescope", "0") == "1")
         self.gamescope_check.connect("toggled", self.on_gamescope_toggled)
-        display_box.attach(self.gamescope_check, 0, 1, 1, 1)
+        gamescope_box.attach(self.gamescope_check, 0, 0, 1, 1)
 
         self.fullscreen_check = Gtk.CheckButton(label=TEXT["fullscreen"])
         self.fullscreen_check.set_active((initial or {}).get("gamescope_fullscreen", "0") == "1")
-        display_box.attach(self.fullscreen_check, 0, 2, 1, 1)
+        gamescope_box.attach(self.fullscreen_check, 0, 1, 1, 1)
 
         res_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         res_label = Gtk.Label(label=TEXT["resolution"], xalign=0)
@@ -571,7 +608,7 @@ class SelectorApp(Gtk.Application):
         res_box.append(res_label)
         res_box.append(self.res_combo)
         res_box.append(self.custom_res_entry)
-        display_box.attach(res_box, 1, 1, 1, 1)
+        gamescope_box.attach(res_box, 1, 0, 1, 1)
 
         fps_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         fps_label = Gtk.Label(label=TEXT["fps"], xalign=0)
@@ -595,17 +632,11 @@ class SelectorApp(Gtk.Application):
         fps_box.append(fps_label)
         fps_box.append(self.fps_combo)
         fps_box.append(self.custom_fps_entry)
-        display_box.attach(fps_box, 1, 2, 1, 1)
+        gamescope_box.attach(fps_box, 1, 1, 1, 1)
 
         self.fsr_check = Gtk.CheckButton(label=TEXT["fsr"])
         self.fsr_check.set_active((initial or {}).get("gamescope_fsr", "0") == "1")
-        display_box.attach(self.fsr_check, 0, 3, 2, 1)
-        extra_row = 4
-        if not self.mangohud_available:
-            self.mangohud_missing_label = Gtk.Label(label=TEXT["mangohud_missing"], xalign=0, wrap=True)
-            self.mangohud_missing_label.add_css_class("dim-label")
-            display_box.attach(self.mangohud_missing_label, 0, 4, 2, 1)
-            extra_row = 5
+        gamescope_box.attach(self.fsr_check, 0, 2, 2, 1)
 
         extra_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         extra_label = Gtk.Label(label=TEXT["extra_args"], xalign=0)
@@ -614,10 +645,41 @@ class SelectorApp(Gtk.Application):
         self.extra_args_entry.set_text((initial or {}).get("gamescope_args", ""))
         extra_box.append(extra_label)
         extra_box.append(self.extra_args_entry)
-        display_box.attach(extra_box, 0, extra_row, 2, 1)
+        gamescope_box.attach(extra_box, 0, 3, 2, 1)
         extra_desc = Gtk.Label(label=TEXT["extra_args_desc"], xalign=0, wrap=True)
         extra_desc.add_css_class("dim-label")
-        display_box.attach(extra_desc, 0, extra_row + 1, 2, 1)
+        gamescope_box.attach(extra_desc, 0, 4, 2, 1)
+        gamescope_card.append(gamescope_box)
+        outer.append(gamescope_card)
+
+        display_card = card(TEXT["display"])
+        display_box = Gtk.Grid(column_spacing=16, row_spacing=8)
+        display_box.set_hexpand(True)
+        self.mangohud_check = Gtk.CheckButton(label=TEXT["mangohud"])
+        self.mangohud_check.set_active(self.mangohud_available and (initial or {}).get("mangohud", "0") == "1")
+        self.mangohud_check.set_sensitive(self.mangohud_available)
+        display_box.attach(self.mangohud_check, 0, 0, 2, 1)
+        mangohud_desc = Gtk.Label(label=TEXT["mangohud_desc"], xalign=0, wrap=True)
+        mangohud_desc.add_css_class("dim-label")
+        display_box.attach(mangohud_desc, 0, 1, 2, 1)
+        next_row = 2
+        if not self.mangohud_available:
+            self.mangohud_missing_label = Gtk.Label(label=TEXT["mangohud_missing"], xalign=0, wrap=True)
+            self.mangohud_missing_label.add_css_class("dim-label")
+            display_box.attach(self.mangohud_missing_label, 0, 2, 2, 1)
+            next_row = 3
+
+        env_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        env_label = Gtk.Label(label=TEXT["env_vars"], xalign=0)
+        env_label.set_size_request(88, -1)
+        self.env_vars_entry = Gtk.Entry(placeholder_text="DXVK_ASYNC=1 PROTON_NO_ESYNC=1", hexpand=True)
+        self.env_vars_entry.set_text((initial or {}).get("env_vars", ""))
+        env_box.append(env_label)
+        env_box.append(self.env_vars_entry)
+        display_box.attach(env_box, 0, next_row, 2, 1)
+        env_desc = Gtk.Label(label=TEXT["env_vars_desc"], xalign=0, wrap=True)
+        env_desc.add_css_class("dim-label")
+        display_box.attach(env_desc, 0, next_row + 1, 2, 1)
         display_card.append(display_box)
         outer.append(display_card)
         self.on_gamescope_toggled(self.gamescope_check)
@@ -673,6 +735,26 @@ class SelectorApp(Gtk.Application):
         dialog.connect("response", self.on_folder_response)
         dialog.show()
 
+    def on_browse_exe(self, _button):
+        dialog = Gtk.FileChooserNative(
+            title=TEXT["program"],
+            transient_for=self.window,
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label=TEXT["browse"],
+            cancel_label=TEXT["cancel"],
+        )
+        dialog.connect("response", self.on_exe_response)
+        dialog.show()
+
+    def on_exe_response(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            file = dialog.get_file()
+            if file:
+                path = file.get_path()
+                if path and self.exe_entry:
+                    self.exe_entry.set_text(path)
+        dialog.destroy()
+
     def on_folder_response(self, dialog, response):
         if response == Gtk.ResponseType.ACCEPT:
             with warnings.catch_warnings():
@@ -723,9 +805,14 @@ class SelectorApp(Gtk.Application):
             "gamescope_fsr": "1" if self.fsr_check and self.fsr_check.get_active() else "0",
             "gamescope_args": self.extra_args_entry.get_text().strip() if self.extra_args_entry else "",
             "mangohud": "1" if self.mangohud_check and self.mangohud_check.get_active() else "0",
+            "env_vars": self.env_vars_entry.get_text().strip() if self.env_vars_entry else "",
         }
 
     def on_run(self, _button):
+        old_cache_file = self.cache_file
+        if self.exe_entry:
+            self.exe = normalize_exe_arg(self.exe_entry.get_text())
+            self.cache_file = cache_file_for(self.exe)
         prefix = self.prefix_entry.get_text()
         if not prefix:
             self.show_error(TEXT["select_prefix"])
@@ -737,6 +824,8 @@ class SelectorApp(Gtk.Application):
         if options is None:
             return
         write_cache(self.cache_file, self.exe, prefix, self.selected_runner, options)
+        if old_cache_file != self.cache_file:
+            old_cache_file.unlink(missing_ok=True)
         self.run_with(prefix, self.selected_runner, options)
 
 
