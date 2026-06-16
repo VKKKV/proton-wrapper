@@ -24,7 +24,7 @@
 
 >`shorin-proton-wrapper-manager`
 
-在每次运行 exe 都会自动进入管理器的仓库，通过 `icoextract` `python-pillow` 生成缩略图。支持导出趁虚到 Linux 应用菜单、重命名显示名称和 `.desktop` 名称、修改配置等功能。
+每次运行 exe 都会自动进入管理器的仓库，通过 `icoextract` `python-pillow` 生成缩略图。支持导出趁虚到 Linux 应用菜单、重命名显示名称和 `.desktop` 名称、修改配置等功能。
 
 ![](./pics/5.png)
 
