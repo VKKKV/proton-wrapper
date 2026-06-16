@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ORIGINAL_ARGS=("$@")
 DEFAULT_PREFIX="${PROTON_PREFIX:-$HOME/.proton}"
 XDG_DATA_HOME_VALUE="${XDG_DATA_HOME:-$HOME/.local/share}"
+XDG_CACHE_HOME_VALUE="${XDG_CACHE_HOME:-$HOME/.cache}"
 LOCAL_RUNNER_DIR="$XDG_DATA_HOME_VALUE/proton/runners"
 STEAM_ROOT="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$HOME/.steam/root}"
 
@@ -25,6 +27,12 @@ GAMESCOPE_FPS=""
 GAMESCOPE_FSR=0
 GAMESCOPE_EXTRA=""
 MANGOHUD=0
+DEBUG=0
+DEBUG_LOG=""
+PREFIX_EXPLICIT=0
+RUNNER_EXPLICIT=0
+GAMESCOPE_EXPLICIT=0
+MANGOHUD_EXPLICIT=0
 
 if [[ "$0" == */* ]]; then
   SELF_PATH="$(realpath -m "$0")"
@@ -36,7 +44,11 @@ RUNNER_TYPES=()
 RUNNER_SOURCES=()
 RUNNER_NAMES=()
 RUNNER_PATHS=()
+DEBUG_ENV=()
 declare -A RUNNER_SEEN=()
+
+[[ -n "${PROTON_PREFIX:-}" ]] && PREFIX_EXPLICIT=1
+[[ -n "${PROTON_RUNNER:-}" ]] && RUNNER_EXPLICIT=1
 
 ui_lang() {
   local locale="${LANG_OVERRIDE:-${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}}"
@@ -44,6 +56,26 @@ ui_lang() {
     zh|zh_*|zh.*|zh-*) printf 'zh\n' ;;
     *) printf 'en\n' ;;
   esac
+}
+
+setup_debug_logging() {
+  local log_dir name timestamp
+  [[ $DEBUG -eq 1 ]] || return 0
+
+  log_dir="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper/logs"
+  mkdir -p "$log_dir"
+  name="${TARGET:-${ACTION:-command}}"
+  name="$(basename "${name:-command}")"
+  name="$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_')"
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  DEBUG_LOG="$log_dir/$timestamp-$name.log"
+  DEBUG_ENV=("PROTON_LOG=1" "PROTON_LOG_DIR=$log_dir")
+
+  exec > >(tee -a "$DEBUG_LOG") 2>&1
+  printf 'Debug log: %s\n' "$DEBUG_LOG"
+  printf 'Command: shorin-proton-wrapper'
+  printf ' %q' "${ORIGINAL_ARGS[@]}"
+  printf '\n'
 }
 
 usage_en() {
@@ -69,6 +101,7 @@ Options:
   --remove-lutris ge|dw   remove runner from Lutris, omit ge|dw to remove all wrapper-installed runners
   --gs, --gamescope       run with Gamescope; use for compatibility, custom resolution/FPS, or FSR
   --mangohud              enable MangoHud performance overlay
+  --debug                 write full debug log to ~/.cache/shorin-proton-wrapper/logs
   --help-full             show detailed help
 
 Examples:
@@ -80,6 +113,7 @@ Examples:
   shorin-proton-wrapper --install-steam dw
   shorin-proton-wrapper --download ge --version GE-Proton10-34
   shorin-proton-wrapper --gamescope --res 1920x1080 --fps 30 --fsr /path/to/app.exe
+  shorin-proton-wrapper --debug /path/to/app.exe
   shorin-proton-wrapper --list-version dw
   shorin-proton-wrapper --update
 EOF
@@ -108,6 +142,7 @@ usage_zh() {
   --remove-lutris ge|dw   移除 Lutris 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
   --gs, --gamescope       用 Gamescope 运行。默认窗口化；需要自定义分辨率、帧率、FSR 或遇到显示兼容问题时使用
   --mangohud              启用 MangoHud 性能叠加层
+  --debug                 将完整调试日志写入 ~/.cache/shorin-proton-wrapper/logs
   --help-full             显示完整说明
 
 示例:
@@ -119,6 +154,7 @@ usage_zh() {
   shorin-proton-wrapper --install-steam dw
   shorin-proton-wrapper --download ge --version GE-Proton10-34
   shorin-proton-wrapper --gamescope --res 1920x1080 --fps 30 --fsr /path/to/app.exe
+  shorin-proton-wrapper --debug /path/to/app.exe
   shorin-proton-wrapper --list-version dw
   shorin-proton-wrapper --update
 EOF
@@ -1091,6 +1127,7 @@ run_proton_command() {
   prepare_mangohud_env
   env \
     "${MANGOHUD_ENV[@]}" \
+    "${DEBUG_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1107,6 +1144,7 @@ exec_proton_command() {
   prepare_mangohud_env
   exec env \
     "${MANGOHUD_ENV[@]}" \
+    "${DEBUG_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1121,7 +1159,7 @@ run_wine_command() {
   shift
   mkdir -p "$PREFIX/pfx"
   prepare_mangohud_env
-  env "${MANGOHUD_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
+  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
 exec_wine_command() {
@@ -1129,7 +1167,7 @@ exec_wine_command() {
   shift
   mkdir -p "$PREFIX/pfx"
   prepare_mangohud_env
-  exec env "${MANGOHUD_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
+  exec env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" WINEPREFIX="$PREFIX/pfx" "$runner" "$@"
 }
 
 validate_resolution() {
@@ -1207,6 +1245,7 @@ run_gamescope_proton_command() {
   prepare_mangohud_env
   env \
     "${MANGOHUD_ENV[@]}" \
+    "${DEBUG_ENV[@]}" \
     STEAM_COMPAT_DATA_PATH="$PREFIX" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)" \
     SteamAppId="${SteamAppId:-0}" \
@@ -1222,7 +1261,7 @@ run_gamescope_wine_command() {
   mkdir -p "$PREFIX/pfx"
   build_gamescope_args
   prepare_mangohud_env
-  env "${MANGOHUD_ENV[@]}" WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
+  env "${MANGOHUD_ENV[@]}" "${DEBUG_ENV[@]}" WINEPREFIX="$PREFIX/pfx" gamescope "${GAMESCOPE_ARGS[@]}" -- "$runner" "$@"
 }
 
 init_prefix() {
@@ -1237,6 +1276,59 @@ init_prefix() {
 ensure_initialized() {
   if [[ ! -d "$PREFIX/pfx" ]]; then
     init_prefix
+  fi
+}
+
+apply_cached_association() {
+  local target_path="$1" cache_dir key cache_file line name value
+  local cache_prefix="" cache_runner="" cache_gamescope="0" cache_fullscreen="0"
+  local cache_res="" cache_fps="" cache_fsr="0" cache_args="" cache_mangohud="0"
+
+  cache_dir="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper/associations"
+  key="$(printf '%s' "$target_path" | sha256sum | cut -d ' ' -f 1)"
+  cache_file="$cache_dir/$key.conf"
+  [[ -r "$cache_file" ]] || return 0
+
+  while IFS= read -r line; do
+    [[ "$line" == *=* ]] || continue
+    name="${line%%=*}"
+    value="${line#*=}"
+    case "$name" in
+      prefix) cache_prefix="$value" ;;
+      runner) cache_runner="$value" ;;
+      gamescope) cache_gamescope="$value" ;;
+      gamescope_fullscreen) cache_fullscreen="$value" ;;
+      gamescope_res) cache_res="$value" ;;
+      gamescope_fps) cache_fps="$value" ;;
+      gamescope_fsr) cache_fsr="$value" ;;
+      gamescope_args) cache_args="$value" ;;
+      mangohud) cache_mangohud="$value" ;;
+    esac
+  done < "$cache_file"
+
+  [[ -n "$cache_prefix" && -d "$cache_prefix" ]] || return 0
+  [[ -n "$cache_runner" && -x "$cache_runner" ]] || return 0
+  [[ "$cache_gamescope" == "1" ]] || cache_gamescope="0"
+  [[ "$cache_fullscreen" == "1" ]] || cache_fullscreen="0"
+  [[ "$cache_fsr" == "1" ]] || cache_fsr="0"
+  [[ "$cache_mangohud" == "1" ]] || cache_mangohud="0"
+
+  if [[ $PREFIX_EXPLICIT -eq 0 ]]; then
+    PREFIX="$cache_prefix"
+  fi
+  if [[ $RUNNER_EXPLICIT -eq 0 ]]; then
+    RUNNER_ARG="$cache_runner"
+  fi
+  if [[ $GAMESCOPE_EXPLICIT -eq 0 ]]; then
+    GAMESCOPE="$cache_gamescope"
+    GAMESCOPE_FULLSCREEN="$cache_fullscreen"
+    GAMESCOPE_RES="$cache_res"
+    GAMESCOPE_FPS="$cache_fps"
+    GAMESCOPE_FSR="$cache_fsr"
+    GAMESCOPE_EXTRA="$cache_args"
+  fi
+  if [[ $MANGOHUD_EXPLICIT -eq 0 ]]; then
+    MANGOHUD="$cache_mangohud"
   fi
 }
 
@@ -1296,11 +1388,12 @@ prepare_mapped_drive_target() {
 
 run_target() {
   local workdir exe proton_exe status
-  select_runner
-  ensure_initialized
-
   TARGET="$(expand_path "$TARGET")"
   [[ -e "$TARGET" ]] || die "target not found: $TARGET"
+  apply_cached_association "$TARGET"
+  PREFIX="$(expand_path "$PREFIX")"
+  select_runner
+  ensure_initialized
 
   case "${TARGET,,}" in
     *.lnk)
@@ -1401,11 +1494,13 @@ parse_args() {
       -p|--prefix)
         [[ $# -ge 2 ]] || die "$1 requires a directory"
         PREFIX="$2"
+        PREFIX_EXPLICIT=1
         shift 2
         ;;
       --runner)
         [[ $# -ge 2 ]] || die "$1 requires a path"
         RUNNER_ARG="$2"
+        RUNNER_EXPLICIT=1
         shift 2
         while [[ $# -gt 0 && ! "$1" =~ ^- ]] && ! [[ -e "$RUNNER_ARG" || "$RUNNER_ARG" == */proton || "$RUNNER_ARG" == */wine || "$RUNNER_ARG" == */wine64 ]]; do
           RUNNER_ARG="$RUNNER_ARG $1"
@@ -1414,6 +1509,7 @@ parse_args() {
         ;;
       --gs|--gamescope)
         GAMESCOPE=1
+        GAMESCOPE_EXPLICIT=1
         shift
         while [[ $# -gt 0 ]]; do
           case "$1" in
@@ -1465,6 +1561,11 @@ parse_args() {
         ;;
       --mangohud)
         MANGOHUD=1
+        MANGOHUD_EXPLICIT=1
+        shift
+        ;;
+      --debug)
+        DEBUG=1
         shift
         ;;
       -d|--directory)
@@ -1587,6 +1688,7 @@ parse_args() {
 
 parse_args "$@"
 PREFIX="$(expand_path "$PREFIX")"
+setup_debug_logging
 
 case "$ACTION" in
   list)
