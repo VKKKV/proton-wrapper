@@ -1,6 +1,6 @@
 # proton-wrapper
 
-一直以来，用 Proton 运行 exe 大多通过添加非 Steam 游戏或者Lutris之类的方式，难以做到`双击直接运行`般无缝的交互体验，所以我制作了 `shorin-proton-wrapper`。最大的特点是安装后可以直接运行 exe，无须任何前置操作。
+一直以来，用 Proton 运行 exe 大多通过添加非 Steam 游戏或者 Lutris 之类的方式，难以做到`双击直接运行`般无缝的交互体验，所以我制作了 `shorin-proton-wrapper`。最大的特点是安装后可以直接运行 exe，无须任何前置操作。
 
 >注意，这只是个包装器，原本 Proton 运行不了的软件依旧会运行不了。
 
@@ -8,11 +8,11 @@
 
 灵感来自 Wine 的配置过程。安装 Wine 后运行 `winecfg` 会在 `~/.wine` 目录初始化前置运行环境。我借鉴并改良了这个设计，运行 exe 的默认行为是检测 `~/.proton` 是否存在，如果不存在则静默初始化。考虑到国内二游盛行，我选择了 `DW-Proton` 作为默认运行器。
 
-## 设置Widnows程序运行环境
+## 设置 Windows 程序运行环境
 
 >`shorin-proton-wrapper-configure`
 
-为了兼顾自由度，我额外做了一个名为 `设置Windows程序运行环境` 的打开方式。支持自定义前置环境目录、Proton 版本、MangoHud 帧数/性能屏显、GameScope 合成器运行等常用设置项。
+为了兼顾自由度，我额外做了一个名为 `设置Windows程序运行环境` 的打开方式。支持自定义前置环境目录、Proton 版本、MangoHud 帧数/性能屏显、Gamescope 合成器运行等常用设置项。
 
 ![](./pics/2.png)
 
@@ -22,7 +22,7 @@
 
 ![](./pics/4.png)
 
-## Shorin Prton Wrapper 管理器
+## Shorin Proton Wrapper 管理器
 
 >`shorin-proton-wrapper-manager`
 
@@ -30,7 +30,7 @@
 
 ![](./pics/5.png)
 
-在进程卡死或者后它进程无法退出的时候可以在进程页面强制退出。
+在进程卡死或者其他进程无法退出的时候可以在进程页面强制退出。
 
 ![](./pics/6.png)
 
